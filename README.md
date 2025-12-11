@@ -22,8 +22,7 @@ fastlane-config/
 ├── fastlane/
 │   ├── Fastfile.ios          # iOS lanes (beta, build_only)
 │   ├── Fastfile.macos        # macOS lanes (beta, build_only)
-│   └── actions/
-│       └── mvlt_common.rb    # Shared helper functions
+│   └── mvlt_common.rb        # Shared helper functions
 ├── README.md                  # This file
 ├── VERSION                    # Semantic version
 ├── CHANGELOG.md              # Version history

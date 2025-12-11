@@ -8,9 +8,8 @@
 # Platform: macOS
 # ===============================================
 
-# Import shared MVLT common actions
-# These are automatically loaded by Fastlane from the actions/ directory
-require_relative 'actions/mvlt_common'
+# Import shared MVLT common helper functions
+require_relative 'mvlt_common'
 
 default_platform(:mac)
 
