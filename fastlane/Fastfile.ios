@@ -1,0 +1,293 @@
+# ===============================================
+# MVLT Centralized Fastfile - iOS Platform
+# ===============================================
+# This Fastfile is imported by app repositories via import_from_git.
+# It contains all iOS build, signing, and deployment logic.
+#
+# Repository: github.com/MVLT-AI/fastlane-config
+# Platform: iOS
+# ===============================================
+
+# Import shared MVLT common actions
+# These are automatically loaded by Fastlane from the actions/ directory
+require_relative 'actions/mvlt_common'
+
+default_platform(:ios)
+
+platform :ios do
+  desc "Push a new beta build to TestFlight"
+  lane :beta do
+    # Ensure we're in a clean state
+    ensure_git_status_clean unless ENV['CI']
+
+    # Setup App Store Connect API authentication
+    setup_shared_api_key
+
+    # Setup keychain for CI environment
+    if ENV['CI']
+      setup_shared_ci_keychain
+    end
+
+    # Build the app with production environment variables
+    dart_defines = build_dart_defines_from_env
+
+    # Prepare Flutter for CI build with dart-defines
+    if ENV['CI']
+      prepare_shared_flutter_for_ci(dart_defines, "ios")
+    end
+
+    # Update CocoaPods
+    setup_shared_cocoapods
+
+    # Get current version number
+    version_number = get_version_number(
+      xcodeproj: "Runner.xcodeproj",
+      target: "Runner"
+    )
+
+    # Get latest build from TestFlight and increment
+    latest_build = latest_testflight_build_number(
+      api_key: lane_context[SharedValues::APP_STORE_CONNECT_API_KEY],
+      app_identifier: "ai.mvlt.app",
+      platform: 'ios',
+      initial_build_number: 0  # Return 0 if no builds exist
+    )
+    new_build_number = latest_build + 1
+
+    puts "📱 Latest iOS build in TestFlight: #{latest_build}"
+    puts "🔢 Building iOS version #{version_number} (#{new_build_number})"
+
+    # Update Xcode project to match
+    increment_build_number(
+      xcodeproj: "Runner.xcodeproj",
+      build_number: new_build_number
+    )
+
+    # For CI: Use manual signing (no Apple ID required, uses pre-installed profiles)
+    # For Local: Use automatic signing throughout (requires authenticated Apple ID)
+    if ENV['CI']
+      puts "🔧 Using manual signing for CI build..."
+      puts ""
+      puts "========================================"
+      puts "🔍 PRE-BUILD CODE SIGNING DEBUG"
+      puts "========================================"
+
+      # Show available certificates
+      puts "🔐 Available Signing Identities:"
+      sh("security find-identity -v -p codesigning")
+      puts ""
+
+      # Show installed provisioning profiles
+      puts "📱 Installed Provisioning Profiles:"
+      profiles_dir = File.expand_path("~/Library/MobileDevice/Provisioning Profiles")
+      if Dir.exist?(profiles_dir)
+        Dir.glob("#{profiles_dir}/*.mobileprovision").each do |profile|
+          puts "  - #{File.basename(profile)}"
+        end
+      else
+        puts "  ⚠️  Profiles directory not found"
+      end
+      puts ""
+
+      puts "🔧 Configuring code signing with:"
+      puts "  - Team ID: ZR533W4VLM"
+      puts "  - Identity: Apple Distribution (generic - Xcode will find the right one)"
+      puts "  - Profile Name: IOS"
+      puts "========================================"
+      puts ""
+
+      # Configure manual code signing for CI with explicit provisioning profile
+      update_code_signing_settings(
+        use_automatic_signing: false,
+        path: "Runner.xcodeproj",
+        targets: ["Runner"],  # Only update Runner target, not Pods
+        team_id: "ZR533W4VLM",
+        code_sign_identity: "Apple Distribution",
+        profile_name: "IOS",  # This is the KEY - tells Xcode which profile to use!
+        build_configurations: ["Release"]
+      )
+
+      build_app(
+        workspace: "Runner.xcworkspace",
+        scheme: "Runner",
+        clean: true,
+        export_method: "app-store",
+        export_options: {
+          method: "app-store",
+          teamID: "ZR533W4VLM",
+          uploadBitcode: false,
+          uploadSymbols: true,
+          signingStyle: "manual",  # Manual signing for CI - uses installed certificate & profile
+          compileBitcode: false,
+          provisioningProfiles: {
+            "ai.mvlt.app" => "IOS"  # Profile installed by GitHub Actions workflow
+          }
+        },
+        output_directory: "../build/ios",
+        output_name: "MVLT.ipa",
+        build_path: "../build/ios",
+        derived_data_path: "../build/ios/derived_data"
+      )
+
+      # Re-enable automatic signing to restore project to clean state
+      update_code_signing_settings(
+        use_automatic_signing: true,
+        path: "Runner.xcodeproj",
+        targets: ["Runner"]
+      )
+    else
+      puts "🔧 Using automatic signing for local build..."
+
+      build_app(
+        workspace: "Runner.xcworkspace",
+        scheme: "Runner",
+        clean: true,
+        export_method: "app-store",
+        export_options: common_export_options.merge({
+          method: "app-store",
+          compileBitcode: false
+        }),
+        output_directory: "../build/ios",
+        output_name: "MVLT.ipa",
+        build_path: "../build/ios",
+        derived_data_path: "../build/ios/derived_data",
+        xcargs: "-allowProvisioningUpdates"  # Allow automatic profile updates for local builds
+      )
+    end
+
+    # Upload to TestFlight
+    upload_to_testflight(
+      api_key: lane_context[SharedValues::APP_STORE_CONNECT_API_KEY],
+      skip_waiting_for_build_processing: true,
+      skip_submission: true,
+      distribute_external: false,
+      notify_external_testers: false,
+      ipa: "../build/ios/MVLT.ipa",
+      changelog: "Automated build from CI/CD pipeline"
+    )
+
+    # Clean up build artifacts (skip in CI to preserve artifacts for GitHub Actions upload)
+    clean_build_artifacts unless ENV['CI']
+
+    # Notify success
+    puts "✅ Successfully uploaded build #{new_build_number} to TestFlight!"
+  end
+
+  desc "Build app without uploading"
+  lane :build_only do
+    # Setup API key
+    setup_shared_api_key
+
+    # Build the app with production environment variables
+    dart_defines = build_dart_defines_from_env
+
+    # Prepare Flutter for CI build with dart-defines
+    if ENV['CI']
+      prepare_shared_flutter_for_ci(dart_defines, "ios")
+    end
+
+    # Update CocoaPods
+    setup_shared_cocoapods
+
+    # Use same CI/Local detection as beta lane
+    if ENV['CI']
+      puts "🔧 Using manual signing for CI build..."
+      puts ""
+      puts "========================================"
+      puts "🔍 PRE-BUILD CODE SIGNING DEBUG"
+      puts "========================================"
+
+      # Show available certificates
+      puts "🔐 Available Signing Identities:"
+      sh("security find-identity -v -p codesigning")
+      puts ""
+
+      # Show installed provisioning profiles
+      puts "📱 Installed Provisioning Profiles:"
+      profiles_dir = File.expand_path("~/Library/MobileDevice/Provisioning Profiles")
+      if Dir.exist?(profiles_dir)
+        Dir.glob("#{profiles_dir}/*.mobileprovision").each do |profile|
+          puts "  - #{File.basename(profile)}"
+        end
+      else
+        puts "  ⚠️  Profiles directory not found"
+      end
+      puts ""
+
+      puts "🔧 Configuring code signing with:"
+      puts "  - Team ID: ZR533W4VLM"
+      puts "  - Identity: Apple Distribution (generic - Xcode will find the right one)"
+      puts "  - Profile Name: IOS"
+      puts "========================================"
+      puts ""
+
+      # Configure manual code signing for CI with explicit provisioning profile
+      update_code_signing_settings(
+        use_automatic_signing: false,
+        path: "Runner.xcodeproj",
+        targets: ["Runner"],  # Only update Runner target, not Pods
+        team_id: "ZR533W4VLM",
+        code_sign_identity: "Apple Distribution",
+        profile_name: "IOS",  # This is the KEY - tells Xcode which profile to use!
+        build_configurations: ["Release"]
+      )
+
+      build_app(
+        workspace: "Runner.xcworkspace",
+        scheme: "Runner",
+        clean: true,
+        export_method: "app-store",
+        export_options: {
+          method: "app-store",
+          teamID: "ZR533W4VLM",
+          uploadBitcode: false,
+          uploadSymbols: true,
+          signingStyle: "manual",  # Manual signing for CI - uses installed certificate & profile
+          compileBitcode: false,
+          provisioningProfiles: {
+            "ai.mvlt.app" => "IOS"  # Profile installed by GitHub Actions workflow
+          }
+        },
+        output_directory: "../build/ios",
+        output_name: "MVLT.ipa",
+        build_path: "../build/ios",
+        derived_data_path: "../build/ios/derived_data"
+      )
+
+      # Re-enable automatic signing to restore project to clean state
+      update_code_signing_settings(
+        use_automatic_signing: true,
+        path: "Runner.xcodeproj",
+        targets: ["Runner"]
+      )
+    else
+      puts "🔧 Using automatic signing for local build..."
+
+      build_app(
+        workspace: "Runner.xcworkspace",
+        scheme: "Runner",
+        clean: true,
+        export_method: "app-store",
+        export_options: common_export_options.merge({
+          method: "app-store",
+          compileBitcode: false
+        }),
+        output_directory: "../build/ios",
+        output_name: "MVLT.ipa",
+        build_path: "../build/ios",
+        derived_data_path: "../build/ios/derived_data",
+        xcargs: "-allowProvisioningUpdates"  # Allow automatic profile updates for local builds
+      )
+    end
+
+    puts "✅ Successfully built MVLT.ipa!"
+  end
+
+  # Error handling
+  error do |lane, exception|
+    puts "❌ Error in lane #{lane}: #{exception.message}"
+
+    # Clean up keychain on failure
+    cleanup_shared_keychain
+  end
+end
